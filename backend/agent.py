@@ -8,7 +8,7 @@ import urllib.error
 import urllib.request
 from typing import Any
 
-from .graph_store import GraphStore
+from .graph_client import GraphAPIClient
 
 
 FIXES = {
@@ -28,7 +28,7 @@ FIXES = {
 class PathguardAgent:
     """A constrained tool-using agent whose findings are always derived from FalkorDB."""
 
-    def __init__(self, store: GraphStore) -> None:
+    def __init__(self, store: GraphAPIClient) -> None:
         self.store = store
 
     def investigate(self, question: str = "Can the public internet reach customer PII?") -> dict[str, Any]:
@@ -37,9 +37,9 @@ class PathguardAgent:
             raise ValueError("This demo currently traces access from the public Internet.")
         if not any(term in normalized for term in ("pii", "customer", "restricted", "sensitive", "personal", "data")):
             raise ValueError("This demo currently checks reachability to restricted customer data.")
-        paths = self.store.attack_paths()
+        graph_snapshot = self.store.analysis()
+        paths = graph_snapshot["paths"]
         recommendations = self._recommend(paths)
-        stats = self.store.graph_stats()
         summary = self._grounded_summary(paths, question)
         model_used = False
         ai_summary = self._optional_model_summary(question, paths)
@@ -54,7 +54,7 @@ class PathguardAgent:
             "path_count": len(paths),
             "paths": paths,
             "recommendations": recommendations,
-            "graph": {"name": "pathguard", **stats},
+            "graph": graph_snapshot["graph"],
             "model_summary": model_used,
             "notice": "Synthetic demo graph. No live cloud account is connected.",
         }
@@ -62,7 +62,7 @@ class PathguardAgent:
     def simulate(self, edge_id: str) -> dict[str, Any]:
         if edge_id not in FIXES:
             raise ValueError("Unknown remediation")
-        self.store.simulate_revocation(edge_id)
+        self.store.revoke_edge(edge_id)
         result = self.investigate()
         result["simulated_fix"] = FIXES[edge_id]
         result["residual_risk"] = "CRITICAL" if result["path_count"] else "NO ACTIVE PATH FOUND"

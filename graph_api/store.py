@@ -64,8 +64,12 @@ class GraphStore:
     """The application's source of truth. There is deliberately no local fallback."""
 
     def __init__(self) -> None:
+        self.url = os.getenv("FALKORDB_URL", "").strip()
         self.host = os.getenv("FALKORDB_HOST", "localhost")
         self.port = int(os.getenv("FALKORDB_PORT", "6379"))
+        self.username = os.getenv("FALKORDB_USERNAME") or None
+        self.password = os.getenv("FALKORDB_PASSWORD") or None
+        self.ssl = os.getenv("FALKORDB_TLS", "false").casefold() in {"1", "true", "yes"}
         self._client: FalkorDB | None = None
         self._graph: Any | None = None
         self._seed_lock = threading.Lock()
@@ -73,12 +77,22 @@ class GraphStore:
     def graph(self) -> Any:
         if self._graph is None:
             try:
-                self._client = FalkorDB(host=self.host, port=self.port)
+                if self.url:
+                    self._client = FalkorDB.from_url(self.url)
+                else:
+                    self._client = FalkorDB(
+                        host=self.host,
+                        port=self.port,
+                        username=self.username,
+                        password=self.password,
+                        ssl=self.ssl,
+                    )
                 self._graph = self._client.select_graph(GRAPH_NAME)
             except Exception as exc:  # connection errors vary by redis-py version
                 self._client = None
                 self._graph = None
-                raise GraphUnavailable(f"Cannot connect to FalkorDB at {self.host}:{self.port}") from exc
+                endpoint = "configured remote endpoint" if self.url else f"{self.host}:{self.port}"
+                raise GraphUnavailable(f"Cannot connect to FalkorDB at {endpoint}") from exc
         return self._graph
 
     def _query(self, cypher: str) -> list[list[Any]]:

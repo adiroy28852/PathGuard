@@ -2,7 +2,13 @@
 
 **A graph-first security agent that proves whether an exposed identity can reach sensitive data, then checks whether a proposed fix removes every route.**
 
-Pathguard is built for the Graph Hacks challenge. FalkorDB stores the synthetic cloud access model and performs every reachability query. Remediation simulation updates an edge in FalkorDB, then reruns the traversal and reports residual paths. If FalkorDB is unavailable, analysis returns an error; there is no cached or in-memory fallback.
+Pathguard is built for the Graph Hacks challenge. Its React console calls the Pathguard application API. The application backend calls a separately deployed Graph API over HTTP. Only that Graph API imports the FalkorDB client, runs Cypher, seeds the graph, and changes graph edges. There is no FalkorDB driver in the application backend and no cached or in-memory fallback.
+
+```text
+React console → Pathguard API → FalkorDB Graph API → FalkorDB
+```
+
+Every reachability query and remediation check runs in FalkorDB. If the database is removed or stopped, the app remains available but reports the graph as offline and analysis returns HTTP 503.
 
 ## Demo flow
 
@@ -20,7 +26,21 @@ The graph is synthetic. The demo does not connect to or change a real cloud acco
 docker-compose up --build
 ```
 
-Open [http://localhost:8000](http://localhost:8000) for the app and [http://localhost:3000](http://localhost:3000) for FalkorDB Browser. The graph and browser ports bind to localhost so the unauthenticated database is not exposed to the network. The app seeds the `pathguard` graph on first use. The Browser is useful for inspecting the same nodes and relationships the application queries.
+Open [http://localhost:8000](http://localhost:8000) for the React app, [http://localhost:8000/graph-api/docs](http://localhost:8000/graph-api/docs) for the Graph API docs through the app, and [http://localhost:3000](http://localhost:3000) for FalkorDB Browser. The direct Graph API and database ports bind to localhost; only the app port is published for the demo. The Graph API seeds the `pathguard` graph on first use. The Browser is useful for inspecting the same nodes and relationships the API queries.
+
+The frontend is React 19 built by Vite. Docker performs the frontend build, so a local Node installation is not required.
+
+### Deploy with FalkorDB Cloud
+
+The default Compose file runs a local FalkorDB container. For a managed FalkorDB endpoint, put its connection URL in `.env` and use the cloud Compose file:
+
+```sh
+# Add FALKORDB_URL=falkors://username:password@host:port to .env
+# URL-encode special characters in the credentials.
+docker-compose -f docker-compose.cloud.yml up --build -d
+```
+
+This mode omits the local database container and keeps the Graph API on the private Compose network; the React app is the only published service. It uses the same graph API and Cypher traversal as the local setup.
 
 To enable optional model summaries, copy `.env.example` to `.env` and add an `OPENAI_API_KEY`. The core analysis and graph-backed summary work without it.
 
@@ -70,11 +90,31 @@ This variable-length traversal is the central product operation. Every displayed
 
 ## Backend
 
-- Python 3.12, FastAPI, and the official FalkorDB Python client.
-- `POST /api/investigate` queries active paths.
-- `POST /api/remediate` disables one allowlisted synthetic permission and reruns reachability.
-- `POST /api/reset` restores the synthetic scenario.
-- `GET /api/health` exposes graph connectivity and graph counts.
+- **Pathguard API**: Python 3.12 and FastAPI. `POST /api/investigate`, `POST /api/remediate`, `POST /api/reset`, and `GET /api/health` serve the console.
+- **FalkorDB Graph API**: a separate Python/FastAPI container. `GET /v1/analysis` runs the path traversal, `POST /v1/remediate` updates an allowlisted edge, `POST /v1/reset` restores the scenario, and `GET /v1/health` reports database readiness. Interactive OpenAPI docs are available through the app at `/graph-api/docs`; the Graph API container also serves them at `/docs` in local Compose mode.
+- The app container does not install the FalkorDB client. Its `GraphAPIClient` uses HTTP and fails closed if the Graph API or database is unavailable.
+
+## Hackathon resource use
+
+The supplied [resource list](https://www.wemakedevs.org/hackathons/falkordb/resources) is a menu, so the project uses the pieces that support its graph-first demo:
+
+- The [FalkorDB Python client](https://github.com/FalkorDB/falkordb-py) is installed only in the Graph API service.
+- Docker Compose runs local FalkorDB and its Browser; the optional Cloud Compose file connects to a managed endpoint.
+- Cypher expresses the bounded reachability query and the remediation re-check. The Browser at port `3000` can inspect the same graph.
+
+The GraphRAG SDK, graph algorithm catalog, other integrations, community projects, and videos are not current runtime dependencies. The demo centers on a directly verifiable path query and edge revocation, which keeps FalkorDB as the required source of truth.
+
+### Prove the database is required
+
+With the stack running, stop only FalkorDB:
+
+```sh
+docker-compose stop falkordb
+curl http://localhost:8000/api/health
+curl -i http://localhost:8000/api/overview
+```
+
+Health reports `falkordb: disconnected`, the UI clears its prior result, and `/api/overview` returns HTTP 503. Restore it with `docker-compose start falkordb`; Pathguard reconnects and queries FalkorDB again.
 
 The API is intentionally limited to the synthetic sample. It is a hackathon demo, not a production cloud security scanner.
 

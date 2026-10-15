@@ -9,17 +9,37 @@ services:
       interval: 3s
       timeout: 2s
       retries: 20
+    volumes:
+      - falkordb-data:/data
+    restart: unless-stopped
 
-  app:
-    build: .
+  graph-api:
+    build:
+      context: .
+      dockerfile: graph_api/Dockerfile
+    image: pathguard-graph-api:local
     ports:
-      - "8000:8000"
+      - "127.0.0.1:8100:8100"
     environment:
       FALKORDB_HOST: falkordb
       FALKORDB_PORT: "6379"
       FALKORDB_GRAPH: pathguard
+      FALKORDB_URL: ${FALKORDB_URL:-}
+      FALKORDB_USERNAME: ${FALKORDB_USERNAME:-}
+      FALKORDB_PASSWORD: ${FALKORDB_PASSWORD:-}
+      FALKORDB_TLS: ${FALKORDB_TLS:-false}
+    restart: unless-stopped
+
+  app:
+    build: .
+    image: pathguard-app:local
+    ports:
+      - "8000:8000"
+    environment:
+      GRAPH_API_URL: http://graph-api:8100
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       OPENAI_MODEL: ${OPENAI_MODEL:-gpt-4.1-mini}
-    depends_on:
-      falkordb:
-        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  falkordb-data:
