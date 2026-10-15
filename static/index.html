@@ -1,0 +1,104 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#071014" />
+    <meta name="description" content="Pathguard proves cloud attack paths with FalkorDB." />
+    <title>Pathguard — prove what's reachable</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=DM+Sans:wght@400;500;600;700&family=Manrope:wght@500;600;700;800&display=swap" rel="stylesheet" />
+    <link rel="stylesheet" href="/static/app.css" />
+  </head>
+  <body>
+    <div class="shell">
+      <aside class="sidebar">
+        <a class="brand" href="/" aria-label="Pathguard home">
+          <span class="brand-mark"><span></span><span></span><span></span><span></span></span>
+          <span>pathguard<span class="brand-period">.</span></span>
+        </a>
+        <div class="workspace-label">WORKSPACE</div>
+        <button class="workspace-switch"><span class="workspace-icon">S</span><span><b>Sentinel Labs</b><small>Demo environment</small></span><span class="chevron">⌄</span></button>
+        <nav class="nav-list" aria-label="Main navigation">
+          <div class="nav-caption">ANALYZE</div>
+          <a class="nav-item active" href="#investigation"><span class="nav-icon">⌕</span>Attack paths <span class="nav-count">02</span></a>
+          <a class="nav-item" href="#graph-panel"><span class="nav-icon">⌘</span>Access graph</a>
+          <div class="nav-caption nav-caption-spaced">ENVIRONMENT</div>
+          <a class="nav-item" href="#assets"><span class="nav-icon">▣</span>Sensitive assets <span class="tiny-dot"></span></a>
+          <a class="nav-item" href="#activity"><span class="nav-icon">◷</span>Activity log</a>
+        </nav>
+        <div class="sidebar-bottom">
+          <div class="sidebar-db-card">
+            <div class="db-card-title"><span id="sidebar-status-dot" class="status-dot pending"></span>GRAPH STATUS</div>
+            <div id="sidebar-status" class="db-status">Connecting to FalkorDB…</div>
+            <div class="db-meta"><span id="node-count">— nodes</span><span id="edge-count">— edges</span></div>
+          </div>
+          <div class="profile"><div class="avatar">AR</div><div><b>Analyst</b><small>Security team</small></div><button class="more-button" aria-label="More options">···</button></div>
+        </div>
+      </aside>
+
+      <main class="main-content">
+        <header class="topbar">
+          <div class="breadcrumbs"><span>Sentinel Labs</span><span class="slash">/</span><b>Attack path analysis</b></div>
+          <div class="topbar-actions"><div class="synthetic-label"><span class="synthetic-dot"></span> SYNTHETIC ENVIRONMENT</div><button id="reset-button" class="button button-quiet">↺ <span>Reset scenario</span></button><div class="top-avatar">AR</div></div>
+        </header>
+
+        <section class="intro" id="investigation">
+          <div class="eyebrow"><span class="eyebrow-line"></span>GRAPH-POWERED SECURITY ANALYSIS</div>
+          <h1>Prove what’s <em>reachable.</em></h1>
+          <p class="intro-copy">Trace attack paths through identities, workloads, and secrets. Test a fix against the graph before risk reaches your data.</p>
+        </section>
+
+        <section class="query-card" aria-label="Ask Pathguard">
+          <div class="query-icon">✳</div>
+          <div class="query-input-wrap"><label for="question-input">INVESTIGATION</label><input id="question-input" value="Can the public internet reach customer PII?" maxlength="240" /></div>
+          <button id="analyze-button" class="button button-primary"><span>Analyze paths</span><span aria-hidden="true">↗</span></button>
+          <div class="query-footer"><span class="query-hint"><kbd>↵</kbd> Press enter to investigate</span><span class="query-source">SOURCE <b>Public Internet</b><span class="source-chevron">⌄</span></span><span class="query-target">TARGET <b>Restricted data</b><span class="target-chip">1 asset</span></span></div>
+        </section>
+
+        <section id="result-section" class="results-section">
+          <div class="section-heading">
+            <div><div class="eyebrow section-eyebrow"><span class="live-indicator"></span>LIVE GRAPH ANALYSIS</div><h2>Reachability report</h2></div>
+            <div class="result-tools"><span id="last-updated" class="updated-label">Waiting for graph</span><button class="icon-button" id="refresh-button" title="Run analysis again" aria-label="Refresh">↻</button></div>
+          </div>
+
+          <div id="offline-banner" class="offline-banner hidden"><span>!</span><div><b>FalkorDB is required for analysis.</b><small>Start the graph service; Pathguard does not use a cached or in-memory answer.</small></div></div>
+
+          <div class="summary-grid">
+            <article class="summary-card risk-card"><div class="card-label">RISK STATUS <span class="help-dot">?</span></div><div class="risk-row"><span id="risk-icon" class="risk-icon">!</span><div><strong id="risk-value">ANALYZING</strong><small id="risk-caption">Querying graph reachability</small></div></div></article>
+            <article class="summary-card"><div class="card-label">ACTIVE ROUTES <span class="card-detail">FROM INTERNET</span></div><div class="metric-row"><strong id="path-count">—</strong><span id="route-change" class="metric-note">FalkorDB query</span></div></article>
+            <article class="summary-card"><div class="card-label">PROTECTED TARGET <span class="card-detail">DATA CLASS</span></div><div class="asset-row"><span class="asset-icon">◈</span><div><strong>Customer PII</strong><small>Restricted · payments database</small></div></div></article>
+          </div>
+
+          <div class="content-grid">
+            <section class="panel graph-panel" id="graph-panel">
+              <div class="panel-heading"><div><div class="panel-title">Attack paths <span id="path-badge" class="count-badge">—</span></div><div class="panel-subtitle">Each route is returned by a bounded Cypher traversal in FalkorDB.</div></div><button id="view-query" class="text-button">View Cypher <span>↗</span></button></div>
+              <div id="paths-container" class="paths-container"><div class="empty-state"><span class="spinner"></span>Waiting for FalkorDB…</div></div>
+              <div class="graph-legend"><span><i class="legend-node legend-external"></i>External</span><span><i class="legend-node legend-workload"></i>Workload</span><span><i class="legend-node legend-identity"></i>Identity</span><span><i class="legend-node legend-sensitive"></i>Sensitive asset</span><span class="legend-explainer">Connected paths are the evidence</span></div>
+            </section>
+
+            <aside class="panel agent-panel">
+              <div class="agent-header"><div class="agent-avatar">✳</div><div><div class="agent-title">Pathguard agent <span class="agent-live">LIVE</span></div><div class="agent-subtitle">Graph-backed reasoning</div></div></div>
+              <div class="agent-rule"><span class="rule-icon">⌘</span><span>Every finding is grounded in the current FalkorDB path set.</span></div>
+              <div class="agent-response"><div class="response-label"><span class="response-dot"></span>ANALYSIS</div><p id="summary-text">Waiting for graph results…</p></div>
+              <div class="recommendations-head"><span>RECOMMENDED FIXES</span><span id="fix-count" class="count-badge">—</span></div>
+              <div id="fixes-container" class="fixes-container"><div class="fix-empty">Recommendations appear after the graph query.</div></div>
+              <div class="agent-footnote">Fixes run in the synthetic graph only. No cloud permissions are changed.</div>
+            </aside>
+          </div>
+
+          <section class="panel evidence-panel" id="activity">
+            <div class="panel-heading"><div><div class="panel-title">Evidence trail <span class="evidence-mark">↗</span></div><div class="panel-subtitle">The relationships behind the current result.</div></div><span id="graph-name" class="graph-name">GRAPH · pathguard</span></div>
+            <div id="evidence-list" class="evidence-list"><div class="evidence-empty">Graph evidence will appear here.</div></div>
+          </section>
+          <footer class="page-footer"><span>PATHGUARD <b>0.1.0</b></span><span>Powered by <b>FalkorDB</b> · Relationships first, answers second.</span><a href="https://www.wemakedevs.org/hackathons/falkordb" target="_blank" rel="noreferrer">Graph Hacks 2026 ↗</a></footer>
+        </section>
+      </main>
+    </div>
+
+    <dialog id="query-dialog" class="query-dialog"><div class="dialog-head"><div><span class="eyebrow">CORE GRAPH OPERATION</span><h3>Cypher used for reachability</h3></div><button id="close-dialog" class="icon-button" aria-label="Close">×</button></div><pre><code id="query-code"></code></pre><p>This bounded variable-length traversal is the product’s source of truth. Pathguard returns no finding when FalkorDB is unavailable.</p></dialog>
+    <div id="toast" class="toast" role="status"></div>
+    <script src="/static/app.js" defer></script>
+  </body>
+</html>
