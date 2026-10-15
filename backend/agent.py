@@ -77,6 +77,27 @@ class PathguardAgent:
         paths = result["paths"]
         if not paths:
             summary = "FalkorDB found no matching observations for this question in the selected scan. That means the evidence was not present in this snapshot; it is not proof that the site has no issue."
+        elif result.get("category") == "interaction":
+            signals = [path["nodes"][-1] for path in paths if path.get("nodes")]
+            counts: dict[str, int] = {}
+            for signal in signals:
+                kind = signal.get("interaction_type", "interaction")
+                counts[kind] = counts.get(kind, 0) + 1
+            breakdown = ", ".join(f"{count} {kind.replace('_', ' ')}" for kind, count in sorted(counts.items()))
+            review_count = sum(bool(signal.get("noise_candidate")) for signal in signals)
+            runtime_status = (result.get("browser_runtime") or {}).get("status", "not_recorded")
+            runtime_popup_count = counts.get("popup_navigation", 0)
+            static_popup_count = counts.get("popup_intent", 0)
+            popup_note = (
+                f"The bounded page-load browser pass observed {runtime_popup_count} popup navigation(s) and {static_popup_count} static popup hint(s)."
+                if runtime_status == "completed"
+                else f"The page-load browser pass was {runtime_status}; {static_popup_count} popup hint(s) are static and runtime behavior could not be confirmed."
+            )
+            summary = (
+                f"FalkorDB returned {len(signals)} traffic signal(s): {breakdown or 'unclassified interactions'}. "
+                f"{review_count} match low/medium-confidence advertising, analytics, or tracking heuristics and are only review candidates. "
+                f"{popup_note} HTTP redirect entries are observed response hops; off-origin requests and non-GET/HEAD requests were blocked."
+            )
         else:
             strongest = max(paths, key=lambda path: path["hops"])
             chain = " → ".join(node["name"] for node in strongest["nodes"])
@@ -180,16 +201,26 @@ class PathguardAgent:
                     "nodes": [node.get("name") for node in path["nodes"]],
                     "relationships": [edge.get("mechanism") for edge in path["edges"]],
                     "evidence": [edge.get("evidence") for edge in path["edges"]],
+                    "signals": [
+                        {
+                            key: node.get(key)
+                            for key in ("interaction_type", "domain_relation", "role_category", "confidence", "noise_candidate", "classification_reason", "redirect_scope")
+                            if key in node
+                        }
+                        for node in path["nodes"]
+                    ],
                     "hops": path["hops"],
                 }
                 for path in paths
             ],
+            "browser_runtime": result.get("browser_runtime", {}),
         }
         body = {
             "model": os.getenv("OPENAI_MODEL", "gpt-4.1-mini"),
             "instructions": (
                 "You are a defensive website evidence analyst. Use only the supplied FalkorDB paths. "
                 "Distinguish observed routes and metadata from confirmed vulnerabilities. Never claim that the target is safe or exploitable. "
+                "Treat ad, analytics, tracking, and popup labels as heuristic observations, not proof of maliciousness or confirmed runtime popups. "
                 "Explain the strongest evidence path in at most 3 short sentences."
             ),
             "input": json.dumps(evidence),

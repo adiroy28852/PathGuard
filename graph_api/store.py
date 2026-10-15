@@ -150,6 +150,8 @@ class GraphStore:
         graph_name = self.site_graph_name(site_host)
         scan_id = snapshot["scan_id"]
         q = lambda value: self._literal(value)
+        browser_runtime = snapshot.get("browser_runtime") or {}
+        runtime_limit_hit = "true" if browser_runtime.get("request_limit_hit") else "false"
         previous = self._site_query(
             graph_name,
             f"MATCH (:Site {{id: {q(site_host)}}})-[:HAS_SCAN]->(s:Scan) "
@@ -163,6 +165,15 @@ class GraphStore:
             f"MERGE (site:Site {{id: {q(site_host)}}}) SET site.name = {q(site_host)}, site.url = {q(root_url)}, site.kind = \"Website\" "
             f"MERGE (scan:Scan {{id: {q(scan_id)}}}) SET scan.target_url = {q(root_url)}, scan.created_at = {q(snapshot['created_at'])}, "
             f"scan.route_count = {len(snapshot['pages'])}, scan.finding_count = {len(snapshot['findings'])}, "
+            f"scan.interaction_count = {len(snapshot.get('interactions', []))}, "
+            f"scan.runtime_status = {q(browser_runtime.get('status', 'not_recorded'))}, "
+            f"scan.runtime_duration_ms = {int(browser_runtime.get('duration_ms', 0))}, "
+            f"scan.runtime_requests_seen = {int(browser_runtime.get('requests_seen', 0))}, "
+            f"scan.runtime_requests_blocked = {int(browser_runtime.get('requests_blocked', 0))}, "
+            f"scan.runtime_popup_pages_seen = {int(browser_runtime.get('popup_pages_seen', 0))}, "
+            f"scan.runtime_error_type = {q(browser_runtime.get('error_type') or '')}, "
+            f"scan.browser_sandbox = {q(browser_runtime.get('browser_sandbox', 'not_recorded'))}, "
+            f"scan.runtime_request_limit_hit = {runtime_limit_hit}, "
             f"scan.artifact_type = {q((snapshot.get('artifact') or {}).get('type', ''))}, scan.artifact_records = {int((snapshot.get('artifact') or {}).get('records', 0))}, scan.kind = \"Website scan\" "
             f"MERGE (site)-[:HAS_SCAN {{id: {q(f'{scan_id}:site-scan')}}}]->(scan) "
             + (f"WITH site, scan MATCH (old:Scan {{id: {q(previous_id)}}}) MERGE (old)-[:PRECEDES {{id: {q(f'{previous_id}:{scan_id}:precedes')}}}]->(scan) " if previous_id else "")
@@ -231,6 +242,34 @@ class GraphStore:
                 f"mechanism: {q(dependency.get('kind', 'external reference'))}, evidence: {q(dependency.get('evidence', 'Observed external origin'))}}}]->(dep)",
             )
 
+        # Keep navigation and redirect behavior separate from page routes and
+        # external resources. These signals explain how the site behaves; they
+        # do not create pages or imply that a destination is malicious.
+        for interaction in snapshot.get("interactions", []):
+            source_url = interaction.get("source_url", root_url)
+            route_id = page_by_url.get(source_url) or next(iter(page_by_url.values()), None)
+            if not route_id:
+                continue
+            target_url = interaction.get("url", "")
+            interaction_type = interaction.get("interaction_type", "unknown")
+            interaction_id = self._route_key(scan_id, f"interaction|{source_url}|{interaction_type}|{target_url}")
+            noise_candidate = "true" if interaction.get("noise_candidate") else "false"
+            status = int(interaction["status"]) if interaction.get("status") is not None else 0
+            relationship_evidence = f"{interaction.get('evidence', 'Observed interaction')} Classification: {interaction.get('classification_reason', 'Unknown role; review evidence.')}"
+            self._site_query(
+                graph_name,
+                f"MERGE (signal:Interaction {{id: {q(interaction_id)}}}) SET signal.scan_id = {q(scan_id)}, signal.url = {q(target_url)}, "
+                f"signal.name = {q(interaction.get('host', 'unknown') + ' · ' + interaction_type)}, signal.host = {q(interaction.get('host', 'unknown'))}, "
+                f"signal.kind = \"Observed interaction\", signal.interaction_type = {q(interaction_type)}, "
+                f"signal.domain_relation = {q(interaction.get('domain_relation', 'unknown'))}, signal.role_category = {q(interaction.get('role_category', 'unknown'))}, "
+                f"signal.confidence = {q(interaction.get('confidence', 'low'))}, signal.noise_candidate = {noise_candidate}, "
+                f"signal.classification_reason = {q(interaction.get('classification_reason', ''))}, signal.evidence = {q(interaction.get('evidence', ''))}, "
+                f"signal.redirect_scope = {q(interaction.get('redirect_scope', ''))}, signal.status = {status} "
+                f"WITH signal MATCH (route:Route {{id: {q(route_id)}}}) "
+                f"MERGE (route)-[:OBSERVED_INTERACTION {{id: {q(f'{scan_id}:interaction:{interaction_id}')}, scan_id: {q(scan_id)}, active: true, "
+                f"mechanism: {q(interaction_type)}, evidence: {q(relationship_evidence)}}}]->(signal)",
+            )
+
         for finding in snapshot["findings"]:
             uri = finding.get("uri", root_url)
             route_id = page_by_url.get(uri)
@@ -255,11 +294,12 @@ class GraphStore:
         dependency_count = len(snapshot["dependencies"])
         finding_count = len(snapshot["findings"])
         history = self.site_history(site_host)
-        previous_snapshot = self._site_inventory(graph_name, previous_id) if previous_id else {"routes": set(), "apis": set(), "findings": set()}
+        previous_snapshot = self._site_inventory(graph_name, previous_id) if previous_id else {"routes": set(), "apis": set(), "findings": set(), "interactions": set()}
         current_snapshot = {
             "routes": {page["url"] for page in snapshot["pages"]},
             "apis": {f"{item['method']} {item['url']}" for item in snapshot["api_endpoints"]},
             "findings": {f"{item['id']} {item['title']}" for item in snapshot["findings"]},
+            "interactions": {f"{item.get('interaction_type')} {item.get('url')}" for item in snapshot.get("interactions", [])},
         }
         changes = {key: {"added": sorted(current_snapshot[key] - previous_snapshot[key]), "removed": sorted(previous_snapshot[key] - current_snapshot[key])} for key in current_snapshot}
         changes["baseline_scan_id"] = previous_id
@@ -277,6 +317,8 @@ class GraphStore:
             "endpoint_count": endpoint_count,
             "dependency_count": dependency_count,
             "finding_count": finding_count,
+            "interaction_count": len(snapshot.get("interactions", [])),
+            "browser_runtime": browser_runtime,
             "artifact": snapshot.get("artifact"),
             "limits": snapshot["limits"],
             "paths": paths,
@@ -301,14 +343,15 @@ class GraphStore:
             root_edges[rid] = {"id": str(row[4]), "mechanism": str(row[5]), "evidence": str(row[6])}
             if category == "all":
                 paths.append({"nodes": [{"id": "public-internet", "name": "Public Internet", "kind": "External principal"}, route], "edges": [root_edges[rid]], "hops": 1, "category": "route"})
-        relation_types = {"api": "CALLS", "dependency": "LOADS", "finding": "HAS_FINDING"}
+        relation_types = {"api": "CALLS", "dependency": "LOADS", "finding": "HAS_FINDING", "interaction": "OBSERVED_INTERACTION"}
         selected = [category] if category in relation_types else list(relation_types)
         for kind in selected:
             rel_type = relation_types[kind]
             rows = self._site_query(
                 graph_name,
                 f"MATCH (r:Route {{scan_id: {q(scan_id)}}})-[e:{rel_type} {{scan_id: {q(scan_id)}, active: true}}]->(t) "
-                "RETURN r.id, r.url, r.name, r.kind, e.id, e.mechanism, e.evidence, t.id, t.name, t.kind, t.url, t.severity, t.title, t.evidence",
+                "RETURN r.id, r.url, r.name, r.kind, e.id, e.mechanism, e.evidence, t.id, t.name, t.kind, t.url, t.severity, t.title, t.evidence, "
+                "t.interaction_type, t.domain_relation, t.role_category, t.confidence, t.noise_candidate, t.classification_reason, t.host, t.redirect_scope, t.status",
             )
             for row in rows:
                 if str(row[0]) not in routes:
@@ -322,6 +365,17 @@ class GraphStore:
                     target["title"] = str(row[12])
                 if row[13]:
                     target["evidence"] = str(row[13])
+                if row[14]:
+                    target["interaction_type"] = str(row[14])
+                    target["domain_relation"] = str(row[15] or "unknown")
+                    target["role_category"] = str(row[16] or "unknown")
+                    target["confidence"] = str(row[17] or "low")
+                    target["noise_candidate"] = row[18] is True or row[18] == 1 or str(row[18]).casefold() == "true"
+                    target["classification_reason"] = str(row[19] or "")
+                    target["host"] = str(row[20] or "")
+                    target["redirect_scope"] = str(row[21] or "")
+                    if row[22] is not None:
+                        target["status"] = int(row[22])
                 route = routes[str(row[0])]
                 paths.append({
                     "nodes": [{"id": "public-internet", "name": "Public Internet", "kind": "External principal"}, route, target],
@@ -336,6 +390,8 @@ class GraphStore:
         category = "all"
         if any(word in normalized for word in ("finding", "vulnerability", "header", "sarif", "issue")):
             category = "finding"
+        elif any(word in normalized for word in ("popup", "pop-up", "redirect", "traffic", "noise", "tracking", "advert", "outbound link", "external navigation", "external link")):
+            category = "interaction"
         elif any(word in normalized for word in ("third", "external", "dependency", "script", "domain")):
             category = "dependency"
         elif any(word in normalized for word in ("api", "endpoint", "request", "call")):
@@ -343,8 +399,19 @@ class GraphStore:
         graph_name = self.site_graph_name(site_host)
         paths = self._site_paths(graph_name, scan_id, category)
         stats = self._site_query(graph_name, f"MATCH (n {{scan_id: {self._literal(scan_id)}}}) RETURN count(n)")
-        target = self._site_query(graph_name, f"MATCH (s:Scan {{id: {self._literal(scan_id)}}}) RETURN s.target_url")
-        return {"database": "FalkorDB", "graph": {"name": graph_name, "nodes": int(stats[0][0]) if stats else 0}, "site_host": site_host, "target_url": str(target[0][0]) if target else site_host, "scan_id": scan_id, "question": question, "category": category, "paths": paths}
+        target = self._site_query(graph_name, f"MATCH (s:Scan {{id: {self._literal(scan_id)}}}) RETURN s.target_url, s.runtime_status, s.runtime_duration_ms, s.runtime_requests_seen, s.runtime_requests_blocked, s.runtime_request_limit_hit, s.runtime_popup_pages_seen, s.runtime_error_type, s.browser_sandbox")
+        runtime = target[0] if target else []
+        browser_runtime = {
+            "status": str(runtime[1] or "not_recorded") if runtime else "not_recorded",
+            "duration_ms": int(runtime[2] or 0) if runtime else 0,
+            "requests_seen": int(runtime[3] or 0) if runtime else 0,
+            "requests_blocked": int(runtime[4] or 0) if runtime else 0,
+            "request_limit_hit": (runtime[5] is True or runtime[5] == 1 or str(runtime[5]).casefold() == "true") if runtime else False,
+            "popup_pages_seen": int(runtime[6] or 0) if runtime else 0,
+            "error_type": str(runtime[7] or "") if runtime else "",
+            "browser_sandbox": str(runtime[8] or "not_recorded") if runtime else "not_recorded",
+        }
+        return {"database": "FalkorDB", "graph": {"name": graph_name, "nodes": int(stats[0][0]) if stats else 0}, "site_host": site_host, "target_url": str(runtime[0]) if runtime else site_host, "browser_runtime": browser_runtime, "scan_id": scan_id, "question": question, "category": category, "paths": paths}
 
     def simulate_site_remediation(self, site_host: str, scan_id: str, finding_id: str) -> dict[str, Any]:
         graph_name = self.site_graph_name(site_host)
@@ -372,9 +439,9 @@ class GraphStore:
         rows = self._site_query(
             graph_name,
             f"MATCH (:Site {{id: {self._literal(site_host.lower())}}})-[:HAS_SCAN]->(s:Scan) "
-            "RETURN s.id, s.target_url, s.created_at, s.route_count, s.finding_count ORDER BY s.created_at DESC LIMIT 10",
+            "RETURN s.id, s.target_url, s.created_at, s.route_count, s.finding_count, s.interaction_count ORDER BY s.created_at DESC LIMIT 10",
         )
-        return [{"scan_id": str(row[0]), "target_url": str(row[1]), "created_at": str(row[2]), "route_count": int(row[3]), "finding_count": int(row[4])} for row in rows]
+        return [{"scan_id": str(row[0]), "target_url": str(row[1]), "created_at": str(row[2]), "route_count": int(row[3] or 0), "finding_count": int(row[4] or 0), "interaction_count": int(row[5] or 0)} for row in rows]
 
     def load_site_scan(self, site_host: str, scan_id: str) -> dict[str, Any]:
         site_host = site_host.lower()
@@ -382,7 +449,8 @@ class GraphStore:
         q = self._literal
         rows = self._site_query(
             graph_name,
-            f"MATCH (s:Scan {{id: {q(scan_id)}}}) RETURN s.target_url, s.created_at, s.route_count, s.finding_count, s.artifact_type, s.artifact_records",
+            f"MATCH (s:Scan {{id: {q(scan_id)}}}) RETURN s.target_url, s.created_at, s.route_count, s.finding_count, s.artifact_type, s.artifact_records, "
+            "s.runtime_status, s.runtime_duration_ms, s.runtime_requests_seen, s.runtime_requests_blocked, s.runtime_request_limit_hit, s.runtime_popup_pages_seen, s.runtime_error_type, s.browser_sandbox",
         )
         if not rows:
             raise ValueError("That scan was not found in FalkorDB.")
@@ -396,7 +464,7 @@ class GraphStore:
         changes = {key: {"added": sorted(current[key] - inventory[key]), "removed": sorted(inventory[key] - current[key])} for key in current}
         changes["baseline_scan_id"] = previous_id
         counts = {}
-        for key, label in (("route_count", "Route"), ("endpoint_count", "ApiEndpoint"), ("dependency_count", "Dependency"), ("finding_count", "Finding")):
+        for key, label in (("route_count", "Route"), ("endpoint_count", "ApiEndpoint"), ("dependency_count", "Dependency"), ("finding_count", "Finding"), ("interaction_count", "Interaction")):
             result = self._site_query(graph_name, f"MATCH (n:{label} {{scan_id: {q(scan_id)}}}) RETURN count(n)")
             counts[key] = int(result[0][0]) if result else 0
         stats = self._site_query(graph_name, f"MATCH (n {{scan_id: {q(scan_id)}}}) RETURN count(n)")
@@ -410,10 +478,23 @@ class GraphStore:
             "scan_id": scan_id,
             "target_url": target_url,
             "created_at": str(rows[0][1]),
-            "scope": "Persisted read-only website observations and imported evidence.",
+            "scope": "Persisted read-only website observations, classified traffic signals, and imported evidence.",
             **counts,
+            "browser_runtime": {
+                "status": str(rows[0][6] or "not_recorded"),
+                "duration_ms": int(rows[0][7] or 0),
+                "requests_seen": int(rows[0][8] or 0),
+                "requests_blocked": int(rows[0][9] or 0),
+                "request_limit_hit": rows[0][10] is True or rows[0][10] == 1 or str(rows[0][10]).casefold() == "true",
+                "popup_pages_seen": int(rows[0][11] or 0),
+                "error_type": str(rows[0][12] or ""),
+                "browser_sandbox": str(rows[0][13] or "not_recorded"),
+                "off_origin_requests_fetched": False,
+                "non_get_requests_sent": False,
+                "cookies_persisted": False,
+            },
             "artifact": {"type": artifact_type, "records": int(rows[0][5] or 0)} if artifact_type else None,
-            "limits": {"max_pages": 12, "max_page_bytes": 1_000_000, "max_first_party_scripts": 20},
+            "limits": {"max_pages": 12, "max_page_bytes": 1_000_000, "max_first_party_scripts": 20, "runtime_browser_ms": 13_500, "max_browser_requests": 100, "runtime_popup_detection": str(rows[0][6] or "") == "completed"},
             "paths": self._site_paths(graph_name, scan_id),
             "changes": changes,
             "history": self.site_history(site_host),
@@ -421,13 +502,14 @@ class GraphStore:
 
     def _site_inventory(self, graph_name: str, scan_id: str | None) -> dict[str, set[str]]:
         if not scan_id:
-            return {"routes": set(), "apis": set(), "findings": set()}
+            return {"routes": set(), "apis": set(), "findings": set(), "interactions": set()}
         q = self._literal
         routes = self._site_query(graph_name, f"MATCH (r:Route {{scan_id: {q(scan_id)}}}) RETURN r.url")
         apis = self._site_query(graph_name, f"MATCH (e:ApiEndpoint {{scan_id: {q(scan_id)}}}) RETURN e.method, e.url")
         findings = self._site_query(graph_name, f"MATCH (f:Finding {{scan_id: {q(scan_id)}}}) RETURN f.source_finding_id, f.title, f.id")
+        interactions = self._site_query(graph_name, f"MATCH (i:Interaction {{scan_id: {q(scan_id)}}}) RETURN i.interaction_type, i.url")
         # Compare findings by title so snapshots created before source IDs were saved remain comparable.
-        return {"routes": {str(row[0]) for row in routes}, "apis": {f"{row[0]} {row[1]}" for row in apis}, "findings": {str(row[1]) for row in findings}}
+        return {"routes": {str(row[0]) for row in routes}, "apis": {f"{row[0]} {row[1]}" for row in apis}, "findings": {str(row[1]) for row in findings}, "interactions": {f"{row[0]} {row[1]}" for row in interactions}}
 
     def ping(self) -> bool:
         result = self._query("RETURN 1 AS ok")

@@ -39,6 +39,14 @@ services:
       GRAPH_API_URL: http://graph-api:8100
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       OPENAI_MODEL: ${OPENAI_MODEL:-gpt-4.1-mini}
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    tmpfs:
+      - /tmp:rw,nosuid,size=256m
+    pids_limit: 256
     restart: unless-stopped
 
 volumes:

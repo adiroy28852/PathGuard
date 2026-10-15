@@ -126,8 +126,10 @@ def scan_site(body: WebsiteScanRequest) -> dict[str, Any]:
     result = graph_call(lambda: graph_api.ingest_site_scan(snapshot))
     result["summary"] = (
         f"FalkorDB saved {result['route_count']} observed route(s), {result['endpoint_count']} API endpoint(s), "
-        f"{result['dependency_count']} external reference(s), and {result['finding_count']} evidence finding(s) "
-        f"for {result['site_host']}. These are observations from this scan, not proof of exploitability."
+        f"{result['dependency_count']} loaded external resource(s), {result.get('interaction_count', 0)} traffic signal(s), "
+        f"and {result['finding_count']} evidence finding(s) for {result['site_host']}. "
+        f"Page-load behavior pass: {(result.get('browser_runtime') or {}).get('status', 'not recorded')}. "
+        "These are observations from this scan, not proof of exploitability."
     )
     result["model_summary"] = False
     return result
@@ -148,8 +150,9 @@ def load_site_scan(site_host: str = Query(min_length=1, max_length=253), scan_id
     result = graph_call(lambda: graph_api.load_site_scan(site_host, scan_id))
     result["summary"] = (
         f"Loaded the saved FalkorDB snapshot for {result['site_host']}: {result['route_count']} routes, "
-        f"{result['endpoint_count']} API endpoints, {result['dependency_count']} external references, "
-        f"and {result['finding_count']} evidence findings."
+        f"{result['endpoint_count']} API endpoints, {result['dependency_count']} loaded external resources, "
+        f"{result.get('interaction_count', 0)} traffic signals, and {result['finding_count']} evidence findings; "
+        f"page-load behavior pass: {(result.get('browser_runtime') or {}).get('status', 'not recorded')}."
     )
     result["model_summary"] = False
     return result
