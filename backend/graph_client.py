@@ -68,5 +68,24 @@ class GraphAPIClient:
     def reset_scenario(self) -> None:
         self._request("/v1/reset", "POST", {})
 
+    def ingest_site_scan(self, snapshot: dict[str, Any]) -> dict[str, Any]:
+        return self._request("/v1/sites/scan", "POST", snapshot)
+
+    def answer_site_question(self, site_host: str, scan_id: str, question: str) -> dict[str, Any]:
+        return self._request("/v1/sites/question", "POST", {"site_host": site_host, "scan_id": scan_id, "question": question})
+
+    def site_history(self, site_host: str) -> dict[str, Any]:
+        from urllib.parse import urlencode
+
+        return self._request(f"/v1/sites/history?{urlencode({'site_host': site_host})}")
+
+    def load_site_scan(self, site_host: str, scan_id: str) -> dict[str, Any]:
+        from urllib.parse import urlencode
+
+        return self._request(f"/v1/sites/scan?{urlencode({'site_host': site_host, 'scan_id': scan_id})}")
+
+    def simulate_site_remediation(self, site_host: str, scan_id: str, finding_id: str) -> dict[str, Any]:
+        return self._request("/v1/sites/remediate", "POST", {"site_host": site_host, "scan_id": scan_id, "finding_id": finding_id})
+
 
 graph_api = GraphAPIClient()

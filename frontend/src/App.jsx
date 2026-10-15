@@ -10,6 +10,7 @@ ORDER BY hops ASC
 LIMIT 50`;
 
 const VIEWS = [
+  { id: "scan", label: "Website scan", icon: "◎" },
   { id: "paths", label: "Attack paths", icon: "⌕" },
   { id: "graph", label: "Access graph", icon: "⌘" },
   { id: "assets", label: "Sensitive assets", icon: "▣" },
@@ -51,7 +52,7 @@ function Sidebar({ health, pathCount, nodeCount, view, onNavigate }) {
         <div className="nav-caption">INVESTIGATE</div>
         {VIEWS.map((item, index) => (
           <Fragment key={item.id}>
-            {index === 2 && <div className="nav-caption nav-caption-spaced">ENVIRONMENT</div>}
+            {index === 3 && <div className="nav-caption nav-caption-spaced">ENVIRONMENT</div>}
             <button type="button" className={`nav-item ${view === item.id ? "active" : ""}`} aria-current={view === item.id ? "page" : undefined} onClick={() => onNavigate(item.id)}>
               <span className="nav-icon">{item.icon}</span><span className="nav-label">{item.label}</span>
               {counts[item.id] != null && <span className="nav-count">{String(counts[item.id]).padStart(2, "0")}</span>}
@@ -254,6 +255,143 @@ function EmptyGraphState({ connected, loading, zeroResults = false }) {
   return <div className="empty-state">Run an investigation to load the current FalkorDB graph result.</div>;
 }
 
+function WebsiteScanView({ connected, showToast }) {
+  const [targetUrl, setTargetUrl] = useState("https://moviemx.netlify.app/");
+  const [artifactType, setArtifactType] = useState("har");
+  const [artifactContent, setArtifactContent] = useState("");
+  const [artifactName, setArtifactName] = useState("");
+  const [scan, setScan] = useState(null);
+  const [answer, setAnswer] = useState(null);
+  const [question, setQuestion] = useState("Which API endpoints did pages call?");
+  const [busy, setBusy] = useState(false);
+  const [questionBusy, setQuestionBusy] = useState(false);
+  const [activePanel, setActivePanel] = useState("paths");
+  const [selectedNodeId, setSelectedNodeId] = useState(null);
+  const [selectedEdgeId, setSelectedEdgeId] = useState(null);
+  const [busyFinding, setBusyFinding] = useState(null);
+
+  useEffect(() => {
+    let alive = true;
+    const restoreLatest = async () => {
+      try {
+        const host = new URL(targetUrl).hostname;
+        const history = await request(`/api/sites/history?site_host=${encodeURIComponent(host)}`);
+        const latest = history.scans?.[0];
+        if (!latest || !alive) return;
+        const saved = await request(`/api/sites/scan?site_host=${encodeURIComponent(host)}&scan_id=${encodeURIComponent(latest.scan_id)}`);
+        if (alive) setScan(saved);
+      } catch { /* An empty history is the normal first-visit state. */ }
+    };
+    restoreLatest();
+    return () => { alive = false; };
+  }, []);
+
+  const runScan = async (event) => {
+    event?.preventDefault();
+    if (busy || !connected) return;
+    setBusy(true);
+    setAnswer(null);
+    try {
+      const payload = { target_url: targetUrl.trim() };
+      if (artifactContent) Object.assign(payload, { artifact_type: artifactType, artifact_content: artifactContent });
+      const result = await request("/api/sites/scan", { method: "POST", body: JSON.stringify(payload) });
+      setScan(result);
+      setSelectedNodeId(null);
+      setSelectedEdgeId(null);
+      setActivePanel("paths");
+      showToast(`Scan saved in FalkorDB · ${result.route_count} routes, ${result.endpoint_count} API endpoints.`);
+    } catch (error) { showToast(error.message, true); }
+    finally { setBusy(false); }
+  };
+
+  const askQuestion = async (event) => {
+    event.preventDefault();
+    if (!scan || questionBusy) return;
+    setQuestionBusy(true);
+    try {
+      const result = await request("/api/sites/question", {
+        method: "POST",
+        body: JSON.stringify({ site_host: scan.site_host, scan_id: scan.scan_id, question: question.trim() }),
+      });
+      setAnswer(result);
+      setActivePanel("answer");
+    } catch (error) { showToast(error.message, true); }
+    finally { setQuestionBusy(false); }
+  };
+
+  const importFile = async (event) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    if (file.size > 2_000_000) { showToast("Evidence files must be smaller than 2 MB.", true); event.target.value = ""; return; }
+    const extension = file.name.split(".").pop().toLowerCase();
+    const kind = extension === "har" ? "har" : extension === "sarif" ? "sarif" : artifactType;
+    try {
+      setArtifactContent(await file.text());
+      setArtifactName(file.name);
+      setArtifactType(kind);
+    } catch { showToast("Could not read that evidence file.", true); }
+  };
+
+  const loadSavedScan = async (item) => {
+    setBusy(true);
+    try {
+      const result = await request(`/api/sites/scan?site_host=${encodeURIComponent(scan.site_host)}&scan_id=${encodeURIComponent(item.scan_id)}`);
+      result.summary = `Loaded saved FalkorDB evidence for ${result.site_host}: ${result.route_count} routes, ${result.endpoint_count} API endpoints, ${result.dependency_count} external references, and ${result.finding_count} findings.`;
+      setTargetUrl(result.target_url);
+      setScan(result);
+      setAnswer(null);
+      setActivePanel("paths");
+      showToast("Saved scan snapshot loaded from FalkorDB.");
+    } catch (error) { showToast(error.message, true); }
+    finally { setBusy(false); }
+  };
+
+  const simulateFinding = async (findingId) => {
+    setBusyFinding(findingId);
+    try {
+      const result = await request("/api/sites/remediate", { method: "POST", body: JSON.stringify({ site_host: scan.site_host, scan_id: scan.scan_id, finding_id: findingId }) });
+      setScan((current) => ({ ...current, paths: result.paths }));
+      setAnswer(null);
+      showToast("Finding dismissed in the FalkorDB what-if graph. The website was not changed.");
+    } catch (error) { showToast(error.message, true); }
+    finally { setBusyFinding(null); }
+  };
+
+  const currentPaths = answer?.paths || scan?.paths || [];
+  return <>
+    <ViewHeading eyebrow="TARGET WEBSITE DISCOVERY" title="Scan a website" detail="Create a sourced, persistent graph from public routes and imported evidence, then ask questions across its relationships." updatedAt={scan?.created_at ? new Date(scan.created_at).toLocaleTimeString() : null} loading={busy || questionBusy} connected={connected} action={scan && <button className="text-button" onClick={() => runScan()} disabled={busy || !connected}>↻ Rescan target</button>} />
+    <form className="panel website-scan-form" onSubmit={runScan}>
+      <div className="scan-form-copy"><div className="panel-title">TARGET <span className="count-badge">READ ONLY</span></div><div className="panel-subtitle">The crawler stays on this website’s origin. It does not submit forms or execute discovered scripts.</div></div>
+      <div className="scan-input-row"><label className="scan-target-input"><span>↗</span><input type="url" required value={targetUrl} onChange={(event) => setTargetUrl(event.target.value)} placeholder="https://staging.example.com" aria-label="Target website URL" /></label><button className="button button-primary" type="submit" disabled={busy || !connected}>{busy ? <><span className="spinner" /> Discovering…</> : <>Start discovery <span>↗</span></>}</button></div>
+      <div className="scan-import-row"><label className="scan-file-label"><span>Enrich with evidence</span><select value={artifactType} onChange={(event) => setArtifactType(event.target.value)} aria-label="Evidence file type"><option value="har">Browser HAR</option><option value="openapi">OpenAPI JSON</option><option value="sarif">SARIF findings</option></select></label><label className="button button-quiet scan-file-button">{artifactName ? `✓ ${artifactName}` : "Choose evidence file"}<input type="file" accept=".har,.json,.sarif,application/json" onChange={importFile} /></label>{artifactName && <button type="button" className="text-button" onClick={() => { setArtifactContent(""); setArtifactName(""); }}>Remove</button>}<span className="scan-import-hint">Optional · JSON up to 2 MB</span></div>
+      <div className="scan-scope-note"><span>i</span><span>Same-origin GET discovery · max 12 routes · no form submissions · external hosts recorded but not fetched</span></div>
+    </form>
+
+    {!scan ? <section className="panel scan-placeholder"><span>◎</span><h3>Start with a website URL</h3><p>Pathguard will collect observable routes, first-party API references, external dependencies, and basic response-header evidence. FalkorDB will retain the scan as a graph.</p><div className="scan-placeholder-foot">FalkorDB connected · No target scan loaded yet</div></section> : <>
+      <div className="scan-metrics">
+        <article className="panel scan-metric"><small>TARGET GRAPH</small><b>{scan.site_host}</b><span>{scan.graph?.name}</span></article>
+        <article className="panel scan-metric"><small>PUBLIC ROUTES</small><b>{scan.route_count}</b><span>observed in this scan</span></article>
+        <article className="panel scan-metric"><small>API + DEPENDENCIES</small><b>{scan.endpoint_count + scan.dependency_count}</b><span>{scan.endpoint_count} API · {scan.dependency_count} external</span></article>
+        <article className="panel scan-metric"><small>FINDINGS</small><b>{scan.finding_count}</b><span>{scan.artifact ? `Includes ${scan.artifact.type.toUpperCase()}` : "passive headers + imports"}</span></article>
+      </div>
+      <section className="panel scan-overview"><div><div className="panel-title">GRAPH-BACKED SCAN <span className="agent-live">FALKORDB</span></div><p>{scan.summary}</p><small>{scan.scope}</small></div><div className="scan-change"><b>{scan.changes?.baseline_scan_id ? "SCAN DIFF" : "FIRST SNAPSHOT"}</b>{scan.changes?.baseline_scan_id ? <span>Routes +{scan.changes.routes.added.length} / −{scan.changes.routes.removed.length} · APIs +{scan.changes.apis.added.length} / −{scan.changes.apis.removed.length}</span> : <span>New scans are compared with this saved graph.</span>}</div></section>
+      <form className="panel scan-question" onSubmit={askQuestion}>
+        <div className="panel-heading"><div><div className="panel-title">ASK THE GRAPH</div><div className="panel-subtitle">Questions select a bounded FalkorDB traversal; the LLM only explains returned evidence.</div></div><span className="graph-name">{scan.scan_id}</span></div>
+        <div className="scan-question-row"><input value={question} onChange={(event) => setQuestion(event.target.value)} maxLength={500} aria-label="Question about this website scan" placeholder="Ask what connects across this scan…" /><button className="button button-primary" disabled={questionBusy}>{questionBusy ? "Traversing…" : "Ask Pathguard ↗"}</button></div>
+        <div className="scan-prompt-chips">{["Which API endpoints did pages call?", "Which external dependencies are loaded?", "What findings affect public routes?"].map((prompt) => <button type="button" key={prompt} onClick={() => setQuestion(prompt)}>{prompt}</button>)}</div>
+      </form>
+      {(answer || scan) && <>
+        {answer && <section className="panel scan-answer"><div className="response-label"><span className="response-dot" />ANSWER FROM FALKORDB · {answer.category.toUpperCase()}</div><p>{answer.summary}</p>{answer.model_summary && <small>LLM explanation grounded in the returned graph paths</small>}</section>}
+        <div className="scan-result-toolbar"><div className="scan-tabs" role="tablist" aria-label="Scan result panels">{[["paths", "Evidence paths"], ["graph", "Graph view"], ["history", `Scan history (${scan.history?.length || 1})`]].map(([id, label]) => <button role="tab" aria-selected={activePanel === id} className={activePanel === id ? "active" : ""} key={id} onClick={() => setActivePanel(id)}>{label}</button>)}{answer && <button role="tab" aria-selected={activePanel === "answer"} className={activePanel === "answer" ? "active" : ""} onClick={() => setActivePanel("answer")}>Answer paths</button>}</div><span>{currentPaths.length} FalkorDB path{currentPaths.length === 1 ? "" : "s"}</span></div>
+        {activePanel === "paths" && <div className="paths-container site-paths">{(scan.paths || []).length ? scan.paths.map((path, index) => <div key={`${path.category}-${path.nodes.at(-1)?.id}-${index}`}><PathCard path={path} index={index} onOpenGraph={(nodeId) => { setSelectedNodeId(nodeId || null); setActivePanel("graph"); }} />{path.category === "finding" && <button className="text-button site-simulate" onClick={() => simulateFinding(path.nodes.at(-1).id)} disabled={Boolean(busyFinding)}>{busyFinding === path.nodes.at(-1).id ? "Updating graph…" : "Simulate dismiss in graph ↗"}</button>}</div>) : <div className="empty-state">No evidence paths were returned for this scan.</div>}</div>}
+        {activePanel === "answer" && <div className="paths-container site-paths">{answer?.paths?.length ? answer.paths.map((path, index) => <PathCard key={`${path.category}-${path.nodes.at(-1)?.id}-${index}`} path={path} index={index} onOpenGraph={(nodeId) => { setSelectedNodeId(nodeId || null); setActivePanel("graph"); }} />) : <div className="empty-state">No paths matched that graph question. Try one of the suggested questions.</div>}</div>}
+        {activePanel === "graph" && <GraphView paths={scan.paths || []} selectedNodeId={selectedNodeId} onSelectNode={setSelectedNodeId} selectedEdgeId={selectedEdgeId} onSelectEdge={setSelectedEdgeId} />}
+        {activePanel === "history" && <section className="panel scan-history">{(scan.history || []).map((item) => <article key={item.scan_id}><div><b>{new Date(item.created_at).toLocaleString()}</b><small>{item.target_url}</small></div><span>{item.route_count} routes · {item.finding_count} findings</span><button type="button" className="text-button" onClick={() => loadSavedScan(item)} disabled={busy}>{item.scan_id === scan.scan_id ? "Current snapshot" : "Load snapshot ↗"}</button><code>{item.scan_id}</code></article>)}</section>}
+      </>}
+    </>}
+  </>;
+}
+
 function App() {
   const [health, setHealth] = useState({ graph_api: "checking", falkordb: "checking", nodes: null, relationships: null });
   const [data, setData] = useState(null);
@@ -262,7 +400,7 @@ function App() {
   const [busyEdge, setBusyEdge] = useState(null);
   const [toast, setToast] = useState(null);
   const [queryOpen, setQueryOpen] = useState(false);
-  const [view, setView] = useState("paths");
+  const [view, setView] = useState("scan");
   const [selectedNodeId, setSelectedNodeId] = useState(null);
   const [selectedEdgeId, setSelectedEdgeId] = useState(null);
   const [evidenceFilter, setEvidenceFilter] = useState("");
@@ -387,7 +525,7 @@ function App() {
       <main className="main-content">
         <header className="topbar">
           <div className="breadcrumbs"><span>Sentinel Labs</span><span className="slash">/</span><b>{viewTitle}</b></div>
-          <div className="topbar-actions"><div className="synthetic-label"><span className="synthetic-dot" /> SYNTHETIC ENVIRONMENT</div><button id="reset-button" className="button button-quiet" onClick={resetScenario} disabled={loading || !connected}>↺ <span>Reset scenario</span></button><div className="top-avatar">AR</div></div>
+          <div className="topbar-actions"><div className="synthetic-label"><span className="synthetic-dot" /> {view === "scan" ? "READ-ONLY SITE DISCOVERY" : "SYNTHETIC ENVIRONMENT"}</div>{view !== "scan" && <button id="reset-button" className="button button-quiet" onClick={resetScenario} disabled={loading || !connected}>↺ <span>Reset scenario</span></button>}<div className="top-avatar">AR</div></div>
         </header>
 
         <section className="intro" id="investigation">
@@ -396,12 +534,12 @@ function App() {
           <p className="intro-copy">Trace real modeled relationships from an internet principal to sensitive data. Change the graph, then see which routes remain.</p>
         </section>
 
-        <form className="query-card" aria-label="Ask Pathguard" onSubmit={(event) => { event.preventDefault(); analyze(); }}>
+        {view !== "scan" && <form className="query-card" aria-label="Ask Pathguard" onSubmit={(event) => { event.preventDefault(); analyze(); }}>
           <div className="query-icon">✳</div>
           <div className="query-input-wrap"><label htmlFor="question-input">INVESTIGATION QUESTION</label><input id="question-input" value={question} onChange={(event) => setQuestion(event.target.value)} maxLength={240} /></div>
           <button id="analyze-button" className="button button-primary" disabled={loading || !connected}><span>{loading ? "Querying graph…" : "Analyze paths"}</span><span aria-hidden="true">↗</span></button>
           <div className="query-footer"><span className="query-hint"><kbd>↵</kbd> Press enter to investigate</span><span className="query-source">SOURCE <b>Public Internet</b><span className="source-chevron">⌄</span></span><span className="query-target">TARGET <b>Restricted data</b><span className="target-chip">FalkorDB traversal</span></span></div>
-        </form>
+        </form>}
 
         <section className="architecture-strip" aria-label="Live service architecture">
           <ServiceStep title="CLIENT" label="React UI" state="connected" /><span className="pipeline-arrow">→</span>
@@ -413,6 +551,8 @@ function App() {
 
         <section className="results-section" aria-live="polite">
           {!connected && <div className="offline-banner"><span>!</span><div><b>FalkorDB is required for analysis.</b><small>{health.graph_api === "connected" ? "The Graph API is running, but it cannot reach FalkorDB. No cached answer is shown." : "Pathguard does not use a cached or in-memory graph answer."}</small></div></div>}
+
+          {view === "scan" && <WebsiteScanView connected={connected} showToast={showToast} />}
 
           {view === "paths" && <>
             <ViewHeading eyebrow="LIVE GRAPH ANALYSIS" title="Attack paths to restricted data" detail="Each route is returned by a bounded variable-length Cypher traversal in FalkorDB." updatedAt={updatedAt} onRefresh={() => analyze()} loading={loading} connected={connected} action={<button id="view-query" className="text-button" onClick={() => setQueryOpen(true)}>View Cypher ↗</button>} />

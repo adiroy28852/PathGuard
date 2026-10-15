@@ -18,7 +18,15 @@ Every reachability query and remediation check runs in FalkorDB. If the database
 4. Simulate removing the deployment role's secret-read permission. No active route remains.
 5. Reset the synthetic graph to restore both routes.
 
-The graph is synthetic. The demo does not connect to or change a real cloud account.
+The graph is synthetic. The demo does not connect to or change a real cloud account. The **Website scan** view also accepts a public website URL and builds a separate persistent FalkorDB graph for its observed routes, API references, dependencies, and passive evidence. Optional HAR, OpenAPI JSON, and SARIF imports enrich that graph. Scans are read-only and can be compared or queried through the graph.
+
+### Scan a target website
+
+1. Open **Website scan**, enter the target's public HTTP(S) URL, and start discovery.
+2. Pathguard fetches up to 12 same-origin pages and 20 first-party scripts, with a 1 MB response cap. It does not execute JavaScript, submit forms, or fetch third-party hosts. Client-side routes and external references are inferred from page/source text; import a browser HAR for observed network traffic, an OpenAPI JSON document for declared operations, or SARIF for scanner findings.
+3. The separate Graph API stores the snapshot in a host-specific FalkorDB graph. Ask questions to traverse the saved evidence, inspect paths, compare scan history, and simulate dismissing a finding in the graph.
+
+This is bounded discovery, not a full browser crawler or a vulnerability scanner. Route and API observations inferred from source are labeled as observations; imported evidence retains its source. All questions and history views read FalkorDB, so the workflow fails when the database is unavailable.
 
 ## Run with Docker Compose
 
@@ -116,7 +124,7 @@ curl -i http://localhost:8000/api/overview
 
 Health reports `falkordb: disconnected`, the UI clears its prior result, and `/api/overview` returns HTTP 503. Restore it with `docker-compose start falkordb`; Pathguard reconnects and queries FalkorDB again.
 
-The API is intentionally limited to the synthetic sample. It is a hackathon demo, not a production cloud security scanner.
+This is a hackathon prototype, not a production cloud security scanner. Website discovery is bounded and read-only; it does not prove that an observed endpoint is exploitable.
 
 ## Hackathon submission notes
 
